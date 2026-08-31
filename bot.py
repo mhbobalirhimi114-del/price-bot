@@ -23,7 +23,7 @@ from telegram.ext import (
 )
 
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN")
+BOT_TOKEN = os.environ.get("8432734624:AAEnO5Ipsq8PmX-4aQueQljO0_nOlS7CEUk)
 UPDATE_SECONDS = 60
 GROUPS_FILE = "groups.json"
 
