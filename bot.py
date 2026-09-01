@@ -1,12 +1,10 @@
 import os
 import json
-import re
 import asyncio
 import threading
 from datetime import datetime
 
 import requests
-from bs4 import BeautifulSoup
 from flask import Flask
 
 from telegram import Update
@@ -21,34 +19,42 @@ from telegram.ext import (
 # SETTINGS
 # =========================================================
 
-# برای Pydroid 3:
-# توکن را اینجا وارد کن
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-
-# اگر خواستی مستقیم داخل Pydroid اجرا کنی:
-# BOT_TOKEN = "توکن_ربات_اینجا"
+BOT_TOKEN = os.environ.get(
+    "BOT_TOKEN",
+    ""
+).strip()
 
 UPDATE_SECONDS = 60
 
 GROUPS_FILE = "groups.json"
 
+REQUEST_TIMEOUT = 15
+
+
 # =========================================================
-# PRICE SOURCES
+# API SOURCES
 # =========================================================
 
-URLS = {
-    "dollar": "https://www.tgju.org/profile/price_dollar_dt",
-    "euro": "https://www.tgju.org/profile/price_eur",
-    "gold18": "https://www.tgju.org/profile/geram18",
-    "coin": "https://www.tgju.org/profile/sekee",
-}
+# اصلی بازار ایران
+PERSIAN_TOOLBOX_URL = (
+    "https://persiantoolbox.ir/api/market"
+)
+
+# پشتیبان طلا
+GOLD_API_URL = (
+    "https://api.goldprice.dev/v1/prices"
+)
+
+# پشتیبان ارزهای جهانی
+FRANKFURTER_URL = (
+    "https://api.frankfurter.dev/v2/rates"
+)
+
 
 HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Linux; Android 12) "
-        "AppleWebKit/537.36 "
-        "Chrome/120.0 Mobile Safari/537.36"
-    )
+    "User-Agent":
+        "NerKhinoo/2.0 "
+        "(Telegram Price Bot)"
 }
 
 
@@ -61,11 +67,15 @@ web = Flask(__name__)
 
 @web.route("/")
 def home():
-    return "Telegram Price Bot is running!"
+
+    return (
+        "NerKhinoo Price Bot is running!"
+    )
 
 
 @web.route("/health")
 def health():
+
     return "OK"
 
 
@@ -91,7 +101,9 @@ def run_web():
 
 def load_groups():
 
-    if not os.path.exists(GROUPS_FILE):
+    if not os.path.exists(
+        GROUPS_FILE
+    ):
         return {}
 
     try:
@@ -100,23 +112,22 @@ def load_groups():
             GROUPS_FILE,
             "r",
             encoding="utf-8"
-        ) as f:
+        ) as file:
 
-            data = json.load(f)
+            data = json.load(file)
 
         if isinstance(data, dict):
+
             return data
 
-        return {}
-
-    except Exception as e:
+    except Exception as error:
 
         print(
             "GROUP LOAD ERROR:",
-            e
+            error
         )
 
-        return {}
+    return {}
 
 
 def save_groups(groups):
@@ -127,20 +138,20 @@ def save_groups(groups):
             GROUPS_FILE,
             "w",
             encoding="utf-8"
-        ) as f:
+        ) as file:
 
             json.dump(
                 groups,
-                f,
+                file,
                 ensure_ascii=False,
                 indent=2
             )
 
-    except Exception as e:
+    except Exception as error:
 
         print(
             "GROUP SAVE ERROR:",
-            e
+            error
         )
 
 
@@ -155,109 +166,593 @@ def fa_number(value):
         "۰۱۲۳۴۵۶۷۸۹،."
     )
 
-    return str(value).translate(
-        table
-    )
+    return str(value).translate(table)
 
 
-def toman(value):
+def clean_number(value):
 
-    # TGJU معمولاً قیمت را ریالی می‌دهد.
-    # تبدیل ریال به تومان
-    return int(value) // 10
+    if value is None:
+        return None
+
+    try:
+
+        text = str(value)
+
+        text = (
+            text
+            .replace(",", "")
+            .replace("٬", "")
+            .replace(" ", "")
+        )
+
+        return float(text)
+
+    except Exception:
+
+        return None
+
+
+def format_number(value):
+
+    if value is None:
+        return "—"
+
+    try:
+
+        value = float(value)
+
+        if value >= 100:
+
+            return fa_number(
+                f"{int(round(value)):,}"
+            )
+
+        return fa_number(
+            f"{value:,.4f}"
+        )
+
+    except Exception:
+
+        return "—"
+
+
+def toman_from_irr(value):
+
+    value = clean_number(value)
+
+    if value is None:
+        return None
+
+    return value / 10
 
 
 # =========================================================
-# PRICE SCRAPER
+# PERSIAN TOOLBOX
 # =========================================================
 
-def get_price(url):
+def get_persian_toolbox():
 
     try:
 
         response = requests.get(
-            url,
+            PERSIAN_TOOLBOX_URL,
             headers=HEADERS,
-            timeout=20
+            timeout=REQUEST_TIMEOUT,
+            params={
+                "_": int(
+                    datetime.now().timestamp()
+                )
+            }
         )
 
         response.raise_for_status()
 
-        soup = BeautifulSoup(
-            response.text,
-            "html.parser"
-        )
+        data = response.json()
 
-        text = soup.get_text(
-            " ",
-            strip=True
-        )
+        if not data.get("ok"):
+            return None
 
-        patterns = [
+        return data
 
-            r"نرخ فعلی::\s*([\d,٬]+)",
-
-            r"نرخ فعلی:\s*([\d,٬]+)"
-
-        ]
-
-        for pattern in patterns:
-
-            match = re.search(
-                pattern,
-                text
-            )
-
-            if match:
-
-                number = (
-                    match.group(1)
-                    .replace(",", "")
-                    .replace("٬", "")
-                )
-
-                return int(number)
+    except Exception as error:
 
         print(
-            "PRICE NOT FOUND:",
-            url
+            "PERSIAN TOOLBOX ERROR:",
+            error
         )
 
         return None
-
-    except Exception as e:
-
-        print(
-            "PRICE ERROR:",
-            url,
-            e
-        )
-
-        return None
-
-
-def get_prices():
-
-    prices = {}
-
-    for name, url in URLS.items():
-
-        prices[name] = get_price(
-            url
-        )
-
-    if any(
-        value is None
-        for value in prices.values()
-    ):
-
-        return None
-
-    return prices
 
 
 # =========================================================
-# PRICE MESSAGE
+# GOLDPRICE.DEV
+# =========================================================
+
+def get_gold_backup():
+
+    try:
+
+        response = requests.get(
+
+            GOLD_API_URL,
+
+            headers=HEADERS,
+
+            timeout=REQUEST_TIMEOUT,
+
+            params={
+                "symbol":
+                    "XAU-USD-SPOT"
+            }
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        symbols = data.get(
+            "symbols",
+            []
+        )
+
+        if not symbols:
+            return None
+
+        item = symbols[0]
+
+        return item
+
+    except Exception as error:
+
+        print(
+            "GOLD BACKUP ERROR:",
+            error
+        )
+
+        return None
+
+
+# =========================================================
+# FRANKFURTER
+# =========================================================
+
+def get_frankfurter():
+
+    try:
+
+        response = requests.get(
+
+            FRANKFURTER_URL,
+
+            headers=HEADERS,
+
+            timeout=REQUEST_TIMEOUT,
+
+            params={
+                "base": "USD"
+            }
+        )
+
+        response.raise_for_status()
+
+        return response.json()
+
+    except Exception as error:
+
+        print(
+            "FRANKFURTER ERROR:",
+            error
+        )
+
+        return None
+
+
+# =========================================================
+# BUILD MARKET DATA
+# =========================================================
+
+def get_prices():
+
+    market = {
+
+        "dollar": None,
+
+        "euro": None,
+
+        "gold18": None,
+
+        "coin": None,
+
+        "half_coin": None,
+
+        "quarter_coin": None,
+
+        "gram_coin": None,
+
+        "source": "NONE",
+
+        "source_time": None,
+
+        "freshness": None,
+
+        "gold_source": None,
+
+        "currency_source": None,
+    }
+
+
+    # =====================================================
+    # 1. PERSIAN TOOLBOX
+    # =====================================================
+
+    pt = get_persian_toolbox()
+
+
+    if pt:
+
+        data = pt.get(
+            "data",
+            {}
+        )
+
+        currencies = data.get(
+            "currencies",
+            {}
+        )
+
+
+        # -------------------------------------------------
+        # IRR
+        # -------------------------------------------------
+
+        irr_item = currencies.get(
+            "IRR"
+        )
+
+        irr_rate = None
+
+        if isinstance(
+            irr_item,
+            dict
+        ):
+
+            irr_rate = clean_number(
+                irr_item.get(
+                    "rate"
+                )
+            )
+
+        else:
+
+            irr_rate = clean_number(
+                irr_item
+            )
+
+
+        # -------------------------------------------------
+        # USD
+        # -------------------------------------------------
+
+        usd_item = currencies.get(
+            "USD"
+        )
+
+        usd_rate = None
+
+        if isinstance(
+            usd_item,
+            dict
+        ):
+
+            usd_rate = clean_number(
+                usd_item.get(
+                    "rate"
+                )
+            )
+
+        else:
+
+            usd_rate = clean_number(
+                usd_item
+            )
+
+
+        # -------------------------------------------------
+        # EUR
+        # -------------------------------------------------
+
+        eur_item = currencies.get(
+            "EUR"
+        )
+
+        eur_rate = None
+
+        if isinstance(
+            eur_item,
+            dict
+        ):
+
+            eur_rate = clean_number(
+                eur_item.get(
+                    "rate"
+                )
+            )
+
+        else:
+
+            eur_rate = clean_number(
+                eur_item
+            )
+
+
+        # =================================================
+        # IMPORTANT
+        #
+        # PersianToolbox currencies are relative to USD.
+        #
+        # Example:
+        #
+        # USD = 1
+        # IRR = 42000
+        #
+        # Therefore:
+        #
+        # USD in IRR = 42000 / 1
+        # EUR in IRR = 42000 / EUR_RATE
+        # =================================================
+
+
+        if (
+            irr_rate is not None
+            and usd_rate is not None
+            and usd_rate != 0
+        ):
+
+            market[
+                "dollar"
+            ] = toman_from_irr(
+                irr_rate / usd_rate
+            )
+
+
+        if (
+            irr_rate is not None
+            and eur_rate is not None
+            and eur_rate != 0
+        ):
+
+            market[
+                "euro"
+            ] = toman_from_irr(
+                irr_rate / eur_rate
+            )
+
+
+        # -------------------------------------------------
+        # GOLD
+        # -------------------------------------------------
+
+        gold = data.get(
+            "gold"
+        )
+
+
+        if isinstance(
+            gold,
+            dict
+        ):
+
+            gold_price = clean_number(
+                gold.get(
+                    "pricePerGram"
+                )
+            )
+
+            if gold_price is not None:
+
+                market[
+                    "gold18"
+                ] = toman_from_irr(
+                    gold_price
+                )
+
+
+        # -------------------------------------------------
+        # FRESHNESS
+        # -------------------------------------------------
+
+        market[
+            "freshness"
+        ] = data.get(
+            "freshness"
+        )
+
+
+        market[
+            "source_time"
+        ] = data.get(
+            "timestamp"
+        )
+
+
+        market[
+            "source"
+        ] = "PersianToolbox"
+
+
+        market[
+            "currency_source"
+        ] = "PersianToolbox"
+
+
+        market[
+            "gold_source"
+        ] = "PersianToolbox"
+
+
+    # =====================================================
+    # 2. GOLD BACKUP
+    # =====================================================
+
+    # اگر طلای اصلی موجود نبود
+    if market["gold18"] is None:
+
+        gold_backup = get_gold_backup()
+
+
+        if gold_backup:
+
+            usd_gold = clean_number(
+                gold_backup.get(
+                    "price"
+                )
+            )
+
+
+            # اگر قیمت طلا به دلار داریم
+            # و دلار ایران هم داریم،
+            # تبدیل به تومان انجام می‌دهیم.
+
+            dollar = market[
+                "dollar"
+            ]
+
+
+            if (
+                usd_gold is not None
+                and dollar is not None
+            ):
+
+                # XAU price is per troy ounce.
+                # 31.1034768 grams / troy ounce.
+
+                gold24_per_gram = (
+                    usd_gold
+                    / 31.1034768
+                )
+
+
+                gold18_usd = (
+                    gold24_per_gram
+                    * 18
+                    / 24
+                )
+
+
+                market[
+                    "gold18"
+                ] = (
+                    gold18_usd
+                    * dollar
+                )
+
+
+                market[
+                    "gold_source"
+                ] = "GoldPrice.dev"
+
+
+    # =====================================================
+    # 3. FRANKFURTER BACKUP
+    # =====================================================
+
+    frank = get_frankfurter()
+
+
+    if frank:
+
+        rates = frank.get(
+            "rates",
+            []
+        )
+
+
+        # تبدیل لیست به dictionary
+
+        rate_map = {}
+
+
+        if isinstance(
+            rates,
+            list
+        ):
+
+            for item in rates:
+
+                if not isinstance(
+                    item,
+                    dict
+                ):
+                    continue
+
+                quote = item.get(
+                    "quote"
+                )
+
+                rate = clean_number(
+                    item.get(
+                        "rate"
+                    )
+                )
+
+                if quote and rate:
+
+                    rate_map[
+                        quote
+                    ] = rate
+
+
+        # -------------------------------------------------
+        # این قسمت فقط زمانی استفاده می‌شود
+        # که PersianToolbox نرخ یورو را ندهد.
+        #
+        # چون Frankfurter نرخ مرجع جهانی است،
+        # نه دلار آزاد ایران.
+        # -------------------------------------------------
+
+        if market[
+            "euro"
+        ] is None:
+
+            eur_rate = rate_map.get(
+                "EUR"
+            )
+
+
+            dollar = market[
+                "dollar"
+            ]
+
+
+            if (
+                eur_rate
+                and dollar
+            ):
+
+                market[
+                    "euro"
+                ] = (
+                    dollar
+                    / eur_rate
+                )
+
+
+                market[
+                    "currency_source"
+                ] = (
+                    "Frankfurter"
+                )
+
+
+    # =====================================================
+    # RETURN
+    # =====================================================
+
+    return market
+
+
+# =========================================================
+# MESSAGE
 # =========================================================
 
 def make_message(prices):
@@ -266,47 +761,84 @@ def make_message(prices):
         "%H:%M:%S"
     )
 
-    dollar = toman(
-        prices["dollar"]
+
+    source = prices.get(
+        "source",
+        "—"
     )
 
-    euro = toman(
-        prices["euro"]
+
+    currency_source = prices.get(
+        "currency_source",
+        "—"
     )
 
-    gold18 = toman(
-        prices["gold18"]
+
+    gold_source = prices.get(
+        "gold_source",
+        "—"
     )
 
-    coin = toman(
-        prices["coin"]
+
+    freshness = prices.get(
+        "freshness"
     )
+
+
+    freshness_text = (
+        str(freshness)
+        if freshness
+        else
+        "نامشخص"
+    )
+
 
     return f"""
 💰 <b>قیمت لحظه‌ای بازار</b>
 
 ━━━━━━━━━━━━━━━━━━
 
-💵 دلار آزاد
-<b>{fa_number(f"{dollar:,}")} تومان</b>
+💵 <b>دلار آزاد</b>
+{format_number(prices.get("dollar"))} تومان
 
-💶 یورو
-<b>{fa_number(f"{euro:,}")} تومان</b>
+💶 <b>یورو</b>
+{format_number(prices.get("euro"))} تومان
 
-🪙 طلای ۱۸ عیار
-<b>{fa_number(f"{gold18:,}")} تومان / گرم</b>
+🪙 <b>طلای ۱۸ عیار</b>
+{format_number(prices.get("gold18"))} تومان / گرم
 
-👑 سکه امامی
-<b>{fa_number(f"{coin:,}")} تومان</b>
+👑 <b>سکه امامی</b>
+{format_number(prices.get("coin"))} تومان
+
+🪙 <b>نیم سکه</b>
+{format_number(prices.get("half_coin"))} تومان
+
+🪙 <b>ربع سکه</b>
+{format_number(prices.get("quarter_coin"))} تومان
+
+🪙 <b>سکه گرمی</b>
+{format_number(prices.get("gram_coin"))} تومان
 
 ━━━━━━━━━━━━━━━━━━
 
-🕐 آخرین بروزرسانی:
+🟢 ارز:
+<b>{currency_source}</b>
+
+🟡 طلا:
+<b>{gold_source}</b>
+
+📡 وضعیت:
+<b>{freshness_text}</b>
+
+🕐 زمان دریافت ربات:
 <b>{fa_number(now)}</b>
 
-🔄 بروزرسانی خودکار: هر ۱ دقیقه
+🔄 بروزرسانی خودکار:
+<b>هر ۱ دقیقه</b>
 
-📊 منبع: TGJU
+━━━━━━━━━━━━━━━━━━
+
+📊 NerKhinoo
 """
 
 
@@ -322,25 +854,42 @@ async def start(
     await update.message.reply_text(
 
         """
-🤖 <b>ربات قیمت دلار و طلا</b>
+🤖 <b>NerKhinoo</b>
 
-👋 خوش آمدید!
+💰 ربات حرفه‌ای قیمت بازار
 
-💰 دریافت قیمت لحظه‌ای:
+━━━━━━━━━━━━━━━━━━
+
+💵 دلار آزاد
+💶 یورو
+🪙 طلای ۱۸ عیار
+👑 سکه امامی
+🪙 نیم سکه
+🪙 ربع سکه
+🪙 سکه گرمی
+
+━━━━━━━━━━━━━━━━━━
+
+📌 دستورات:
 
 /price
-
-📢 فعال کردن قیمت خودکار در گروه:
+💰 دریافت آخرین قیمت
 
 /on
-
-🛑 خاموش کردن قیمت خودکار در گروه:
+🔄 فعال کردن قیمت خودکار گروه
 
 /off
+🛑 خاموش کردن قیمت خودکار
 
-ℹ️ قیمت‌ها هر ۱ دقیقه بروزرسانی می‌شوند.
-""",
+/status
+📊 وضعیت سیستم
 
+━━━━━━━━━━━━━━━━━━
+
+⚡ چند منبع برای دریافت نرخ
+🔁 سیستم Backup خودکار
+"""
+        ,
         parse_mode="HTML"
     )
 
@@ -354,27 +903,32 @@ async def price(
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    msg = await update.message.reply_text(
-        "⏳ در حال دریافت قیمت..."
+    message = await update.message.reply_text(
+        "⏳ در حال دریافت آخرین نرخ..."
     )
+
 
     prices = await asyncio.to_thread(
         get_prices
     )
 
+
     if prices is None:
 
-        await msg.edit_text(
+        await message.edit_text(
 
-            "❌ دریافت قیمت ناموفق بود.\n\n"
-            "لطفاً چند لحظه بعد دوباره امتحان کنید."
+            "❌ دریافت قیمت ناموفق بود.\n"
+            "چند لحظه بعد دوباره امتحان کنید."
         )
 
         return
 
-    await msg.edit_text(
 
-        make_message(prices),
+    await message.edit_text(
+
+        make_message(
+            prices
+        ),
 
         parse_mode="HTML"
     )
@@ -391,46 +945,56 @@ async def on_command(
 
     chat = update.effective_chat
 
-    # فقط گروه
+
     if chat.type not in (
         "group",
         "supergroup"
     ):
 
         await update.message.reply_text(
-
-            "❌ دستور /on فقط داخل گروه قابل استفاده است."
+            "❌ این دستور فقط داخل گروه است."
         )
 
         return
 
+
     groups = load_groups()
+
 
     chat_id = str(
         chat.id
     )
 
-    if chat_id not in groups:
 
-        groups[chat_id] = {
+    old = groups.get(
+        chat_id,
+        {}
+    )
 
-            "message_id": None,
 
-            "enabled": True
-        }
+    groups[
+        chat_id
+    ] = {
 
-    else:
+        "message_id":
+            old.get(
+                "message_id"
+            ),
 
-        groups[chat_id]["enabled"] = True
+        "enabled":
+            True
+    }
+
 
     save_groups(
         groups
     )
 
+
     await update.message.reply_text(
 
         "✅ قیمت خودکار فعال شد.\n\n"
-        "🔄 قیمت هر ۱ دقیقه بروزرسانی می‌شود."
+        "🔄 بروزرسانی هر ۱ دقیقه."
     )
 
 
@@ -445,35 +1009,40 @@ async def off_command(
 
     chat = update.effective_chat
 
+
     if chat.type not in (
         "group",
         "supergroup"
     ):
 
         await update.message.reply_text(
-
-            "❌ دستور /off فقط داخل گروه قابل استفاده است."
+            "❌ این دستور فقط داخل گروه است."
         )
 
         return
 
+
     groups = load_groups()
+
 
     chat_id = str(
         chat.id
     )
 
+
     if chat_id in groups:
 
-        del groups[chat_id]
+        del groups[
+            chat_id
+        ]
 
         save_groups(
             groups
         )
 
-    await update.message.reply_text(
 
-        "🛑 قیمت خودکار برای این گروه خاموش شد."
+    await update.message.reply_text(
+        "🛑 قیمت خودکار خاموش شد."
     )
 
 
@@ -487,26 +1056,32 @@ async def update_groups(
 
     groups = load_groups()
 
+
     if not groups:
         return
+
 
     prices = await asyncio.to_thread(
         get_prices
     )
 
+
     if prices is None:
 
         print(
-            "❌ قیمت دریافت نشد."
+            "PRICE UPDATE FAILED"
         )
 
         return
+
 
     text = make_message(
         prices
     )
 
+
     changed = False
+
 
     for chat_id, info in list(
         groups.items()
@@ -514,7 +1089,6 @@ async def update_groups(
 
         try:
 
-            # اگر خاموش شده
             if not info.get(
                 "enabled",
                 True
@@ -522,33 +1096,42 @@ async def update_groups(
 
                 continue
 
+
             message_id = info.get(
                 "message_id"
             )
 
-            # اولین پیام
+
             if not message_id:
 
-                msg = await context.bot.send_message(
+                sent = (
+                    await context
+                    .bot
+                    .send_message(
 
-                    chat_id=int(
-                        chat_id
-                    ),
+                        chat_id=int(
+                            chat_id
+                        ),
 
-                    text=text,
+                        text=text,
 
-                    parse_mode="HTML"
+                        parse_mode="HTML"
+                    )
                 )
 
-                groups[chat_id][
+
+                groups[
+                    chat_id
+                ][
                     "message_id"
-                ] = msg.message_id
+                ] = sent.message_id
+
 
                 changed = True
 
+
             else:
 
-                # همان پیام را ویرایش می‌کنیم
                 await context.bot.edit_message_text(
 
                     chat_id=int(
@@ -562,13 +1145,15 @@ async def update_groups(
                     parse_mode="HTML"
                 )
 
-        except Exception as e:
+
+        except Exception as error:
 
             print(
                 "GROUP ERROR:",
                 chat_id,
-                e
+                error
             )
+
 
     if changed:
 
@@ -588,12 +1173,26 @@ async def status(
 
     groups = load_groups()
 
+
     await update.message.reply_text(
 
-        "🤖 <b>وضعیت ربات</b>\n\n"
+        "🤖 <b>NerKhinoo Status</b>\n\n"
+
         "🟢 ربات فعال است\n"
-        "🔄 بروزرسانی: هر ۱ دقیقه\n"
-        f"👥 تعداد گروه‌های فعال: "
+
+        "🇮🇷 PersianToolbox: "
+        "<b>PRIMARY</b>\n"
+
+        "🥇 GoldPrice.dev: "
+        "<b>GOLD BACKUP</b>\n"
+
+        "🌍 Frankfurter: "
+        "<b>FX BACKUP</b>\n\n"
+
+        "🔄 بروزرسانی گروه‌ها: "
+        "<b>۶۰ ثانیه</b>\n"
+
+        f"👥 گروه‌های فعال: "
         f"<b>{fa_number(len(groups))}</b>",
 
         parse_mode="HTML"
@@ -609,80 +1208,73 @@ def main():
     if not BOT_TOKEN:
 
         raise RuntimeError(
-
-            "BOT_TOKEN تنظیم نشده است.\n\n"
-            "برای Pydroid 3 توکن را در بالای کد "
-            "داخل BOT_TOKEN قرار بده."
+            "BOT_TOKEN تنظیم نشده است."
         )
+
 
     application = (
 
         Application
-
         .builder()
-
         .token(
             BOT_TOKEN
         )
-
         .build()
     )
 
-    # /start
-    application.add_handler(
 
+    application.add_handler(
         CommandHandler(
             "start",
             start
         )
     )
 
-    # /price
-    application.add_handler(
 
+    application.add_handler(
         CommandHandler(
             "price",
             price
         )
     )
 
-    # /on
-    application.add_handler(
 
+    application.add_handler(
         CommandHandler(
             "on",
             on_command
         )
     )
 
-    # /off
-    application.add_handler(
 
+    application.add_handler(
         CommandHandler(
             "off",
             off_command
         )
     )
 
-    # /status
-    application.add_handler(
 
+    application.add_handler(
         CommandHandler(
             "status",
             status
         )
     )
 
-    # Job Queue
+
     if application.job_queue is None:
 
         raise RuntimeError(
 
-            "JobQueue نصب نیست.\n"
-            "این دستور را اجرا کن:\n\n"
+            "JobQueue نصب نیست.\n\n"
+
+            "اجرا کن:\n"
+
             "pip install "
             "\"python-telegram-bot[job-queue]\""
         )
+
 
     application.job_queue.run_repeating(
 
@@ -693,7 +1285,7 @@ def main():
         first=10
     )
 
-    # Flask
+
     threading.Thread(
 
         target=run_web,
@@ -702,25 +1294,35 @@ def main():
 
     ).start()
 
-    print(
-        "================================"
-    )
-
-    print(
-        "🤖 BOT STARTED"
-    )
-
-    print(
-        "💰 PRICE UPDATE: 60 SECONDS"
-    )
-
-    print(
-        "🔐 FORCE SUBSCRIPTION: DISABLED"
-    )
 
     print(
         "================================"
     )
+
+    print(
+        "🤖 NerKhinoo STARTED"
+    )
+
+    print(
+        "🇮🇷 PersianToolbox = PRIMARY"
+    )
+
+    print(
+        "🥇 GoldPrice.dev = GOLD BACKUP"
+    )
+
+    print(
+        "🌍 Frankfurter = FX BACKUP"
+    )
+
+    print(
+        "🔄 UPDATE = 60 SECONDS"
+    )
+
+    print(
+        "================================"
+    )
+
 
     application.run_polling()
 
